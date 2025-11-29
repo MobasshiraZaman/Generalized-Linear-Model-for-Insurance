@@ -1,0 +1,713 @@
+---
+title: "Generalized Linear Modeling for French Motor Claim Frequency"
+author: "Mobasshira Zaman"
+subtitle: "ACT 560: Regression Modeling: Insurance"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+fontsize: 11pt
+
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+    df_print: paged
+    code_folding: "show"
+    theme: cosmo
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    latex_engine: xelatex   # needed to use Times New Roman reliably
+    keep_tex: false
+
+mainfont: "Times New Roman"
+# Optional (better math fonts):
+monofont: "Courier New"
+mathfont: "TeX Gyre Termes Math"
+
+header-includes:
+  - |
+    <style>
+      /* Force Times New Roman + 11pt across the HTML */
+      body, .table, .table td, .table th, p, li, code, pre, .tocify, .tocify ul li a {
+        font-family: "Times New Roman", Times, serif !important;
+        font-size: 11pt !important;
+        line-height: 1.4;
+      }
+      /* Headings scaled from an 11pt base */
+      h1 { font-size: 22pt !important; }
+      h2 { font-size: 18pt !important; }
+      h3 { font-size: 14pt !important; }
+      h4, h5, h6 { font-size: 12pt !important; }
+
+      /* Code blocks slightly smaller so they don’t overrun */
+      pre, code { font-family: "Courier New", Courier, monospace !important; font-size: 10pt !important; }
+
+      /* Keep your centered title block behavior */
+      body > div#header, body > header, .title-block {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;  /* vertical */
+        align-items: center;      /* horizontal */
+        text-align: center;
+      }
+    </style>
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  echo = TRUE,
+  results = 'show'
+)
+```
+
+# Executive Summary
+
+This project analyzes how driver, vehicle, and regional characteristics affect the likelihood of motor insurance claims. Using data from a large French auto insurance portfolio, the goal was to identify the key risk drivers and recommend a reliable model that supports fair pricing and stronger portfolio management.
+
+Three modeling approaches were tested. The standard model provided a baseline, while enhanced versions were developed to better handle differences in risk and the large share of customers who make no claims. Among these, the Zero-Inflated Poisson (ZIP) model performed best, offering the most accurate and balanced results. The analysis found that claim frequency is most influenced by driver age, vehicle age, fuel type, and vehicle power, with clear regional variations. Adopting the ZIP model enables more precise rate-setting, improves identification of low- and high-risk segments, and supports more efficient capital use.
+
+This project demonstrates a data-driven approach that can strengthen underwriting discipline, enhance pricing fairness, and improve overall profitability through more informed risk segmentation. It is recommended that stakeholders adopt the ZIP modeling framework as a decision-support tool for future pricing reviews, product design, and portfolio risk monitoring, ensuring more sustainable and competitive business performance. This project helps us customize pricing and the portfolio by region and simple factors (driver age, car age, fuel type, power), so coverage better matches local risk.
+
+# Introduction
+
+Modeling motor-insurance claim frequency is foundational to premium adequacy and fairness, as reliable estimates of expected claim counts underpin sustainable pricing (Marciuc, 2024). The accuracy of these models directly affects the insurer’s ability to manage portfolio risk, allocate capital efficiently, and remain competitive. The French motor dataset analyzed here has become a benchmark for claim frequency modeling, as it captures a large and diverse portfolio of private passenger vehicles across multiple regions, vehicle types, and driver demographics (FLOSER, 2019). Because the number of claims tends to be small and the majority of policyholders report zero claims, specialized count-data models such as Poisson, Negative Binomial, and Zero-Inflated Poisson are particularly suitable (Simmachan & Boonkrong, 2024).\
+
+Understanding the drivers of claim frequency is essential for fair pricing, solvency, and risk management. This project aims to quantify how policyholder and vehicle characteristics influence expected claim counts and to compare competing statistical models that address common issues such as over-dispersion and excess zeros. The study evaluates three approaches—a standard Poisson GLM, a Negative Binomial GLM, and a Zero-Inflated Poisson model—using cross-validation and test-set performance metrics. The goal is to identify a robust yet interpretable model that balances predictive accuracy with transparency, providing a reliable foundation for rate-making and portfolio monitoring in motor insurance practice.
+
+```{r}
+#import libraries
+library(data.table) 
+library(ggplot2) 
+library(splines)
+library(MASS) 
+library(DHARMa)
+library(dplyr)
+library(MASS)      
+library(pROC)      
+library(ggplot2)
+library(patchwork)
+library(boot)
+require(pscl)
+library(pROC)
+```
+
+# Data Description
+
+## Data Source
+
+Data were sourced from the freMTPL2freq Kaggle repository (FLOSER, 2019). The underlying source is the CASDatasets R package (version 1.0-6, 2016) (Dutang & Charpentier, 2016). Table 1 summarizes the variable definitions and measurement scales used in the freMTPL2freq dataset.\
+Table 1: Variable definitions for the freMTPL2freq dataset
+
+| Variable   | Unit    | Description                                             |
+|-------------|-------------|----------------------------------------------|
+| IDpol      | ID      | Policy identifier (links to claim records).             |
+| ClaimNb    | count   | Number of claims during the exposure period.            |
+| Exposure   | years   | Length of time the policy is in force.                  |
+| Area       | code    | Area class (A–F).                                       |
+| Region     | code    | Geographic region (insurer classification).             |
+| VehBrand   | factor  | Vehicle brand.                                          |
+| VehPower   | class   | Vehicle power class.                                    |
+| VehAge     | years   | Age of the vehicle.                                     |
+| VehGas     | factor  | Fuel type.                                              |
+| DrivAge    | years   | Age of the driver.                                      |
+| BonusMalus | index   | Bonus–malus score (50–350; 100 = bonus, \>100 = malus). |
+| Density    | pop/km² | Population density of the insured’s area.               |
+
+```{r}
+# load data
+df <- as.data.frame(readxl::read_excel("/Users/mobasshirazaman/Library/CloudStorage/OneDrive-NorthernIllinoisUniversity/ASU/Fall2025/ACT560/Project1MZ/freMTPL2freq.xlsx"))
+```
+
+## Exploratory Data Analysis
+
+The dataset has 678013 rows and 12 columns. For this project the target variable will be ClaimNb. The IDpol is a policy type without additional information available, hence, we will not consider this a modeling parameter as this will not provide any explainable information. The target variable is numerical, as well as seven other variables except Area, Region, VehBrand, VehGas.
+
+```{r}
+
+cat("Dataset shape: ", nrow(df), "rows x", ncol(df), "columns\n\n", sep=" ")
+cat("Data Info: data type\n")
+str(df)
+```
+
+The variables does not have any missing values. The cardinality summary indicates the number of distinct observations for each variable in the dataset. Thius provides idea about the number of categories which is especially important to understand the categorical variables. The dataset mentions 11 area code, 22 regions, 11 vehicle brands, vehicles' operating on 2 types of gas.
+
+```{r}
+cat("\nMissing Values:\n")
+print(colSums(is.na(df)))
+cat("\nCardinality:\n")
+sapply(df, function(x) length(unique(x)))
+```
+
+The summary stattistics of the numerical varibales shows that most policyholders have relatively short exposure durations and few claims, which is typical for frequency data. ClaimNb is highly skewed, with a mean of only 0.05 but a maximum of 16, indicating that multiple-claim events are rare. Exposure averages about half a year, while vehicle and driver ages range broadly, with mean values near 7 and 46 years, respectively. The BonusMalus factor varies between 50 and 230, suggesting a wide range of driving risk classes, and Density spans from 1 to over 27,000 inhabitants per km², reflecting strong regional heterogeneity in population environments. Overall, the descriptive statistics highlight substantial variation across demographic and policy-related variables, with claim frequency remaining very low.
+
+```{r}
+# Numerical feature stats
+cat("\nNumerical Features Statistics:\n")
+nums <- sapply(df, is.numeric)
+print(summary(df[ , nums, drop = FALSE]))
+```
+
+We can have better understanding by observing the histograms for the numerical and bar plots for categorical variables. The histograms showed notable skewness and uneven distributions across variables. To address this, log transformation is applied to Density due to its heavy right tail. VehAge was grouped into three categories (0, 1–10, 11+) to capture its clustered pattern, while VehPower was converted into 2 categories (“low” ≤ 8, “high” \> 8). Since only a few VehBrand categories appeared frequently, the top three brands been retained and grouped the rest as “Other.”\
+
+```{r}
+#histogram 
+# vars
+num_cols <- c("ClaimNb","Exposure","VehPower","VehAge","DrivAge","BonusMalus","Density")
+others   <- setdiff(num_cols, "ClaimNb")
+# layout: [ empty | ClaimNb | empty ] on row 1, then 3x2 grid below
+mat <- matrix(c(
+  0, 1, 0,
+  2, 3, 4,
+  5, 6, 7
+), nrow = 3, byrow = TRUE)
+layout(mat, widths = c(1,1,1), heights = c(1,1,1))
+
+op <- par(mar = c(4, 5, 2, 1))  # bigger left margin fixes y-label cut
+plot_hist <- function(x, title) {
+  hist(x, breaks = 50, col = "lightblue", border = "gray30",
+       main = title, xlab = title, ylab = "Frequency")
+}
+
+# top-center: ClaimNb
+plot_hist(df$ClaimNb, "ClaimNb")
+
+# the rest in order
+plot_hist(df$Exposure,   "Exposure")
+plot_hist(df$VehPower,   "VehPower")
+plot_hist(df$VehAge,     "VehAge")
+plot_hist(df$DrivAge,    "DrivAge")
+plot_hist(df$BonusMalus, "BonusMalus")
+plot_hist(df$Density,    "Density")
+
+par(op); layout(1)
+par(op)
+```
+
+Figure 1: Histogram for numerical variables\
+
+```{r}
+
+# 1) pick categoricals
+cat_cols <- c("Area","VehBrand","VehGas","Region")
+
+# 2) helper to get counts (top N if many levels)
+top_counts <- function(x, n = 15) {
+  tb <- sort(table(x), decreasing = TRUE)
+  if (length(tb) > n) tb[1:n] else tb
+}
+
+# 3) layout: 2x2 collage
+op <- par(mfrow = c(2,2), mar = c(7, 5, 3, 1))  # bigger bottom for rotated names
+
+# Area (small #levels)
+barplot(table(df$Area),
+        main = "Area",
+        ylab = "Count",
+        col = "lightblue")
+
+# VehGas (small #levels)
+barplot(table(df$VehGas),
+        main = "VehGas",
+        ylab = "Count",
+        col = "lightblue")
+
+# VehBrand (top 15)
+barplot(top_counts(df$VehBrand, 15),
+        main = "VehBrand (Top 15)",
+        ylab = "Count",
+        col = "lightblue",
+        las = 2, cex.names = 0.8)
+
+# Region (top 15)
+barplot(top_counts(df$Region, 15),
+        main = "Region (Top 15)",
+        ylab = "Count",
+        col = "lightblue",
+        las = 2, cex.names = 0.8)
+
+par(op)
+```
+
+Figure 2: Bar plot for categorical variables.
+
+The numerical varibales are also checked for outliers. ClaimNb has outliers but here this high number of claim cases should be kept as those can provide further information for the modeling, only claims more than 10 times are filtered out. Some of the predictors are selected for transformation but others are filtered to remove the outliers, such as driver's age.
+
+```{r}
+# Boxplots to reveal outliers
+
+num_cols <- c("ClaimNb","Exposure","VehPower","VehAge","DrivAge","BonusMalus","Density")
+others   <- setdiff(num_cols, "ClaimNb")
+
+# layout same as before: [ empty | ClaimNb | empty ], then grid
+mat <- matrix(c(
+  0, 1, 0,
+  2, 3, 4,
+  5, 6, 7
+), nrow = 3, byrow = TRUE)
+layout(mat, widths = c(1,1,1), heights = c(1,1,1))
+
+op <- par(mar = c(4, 5, 2, 1))  
+
+plot_box <- function(x, title) {
+  boxplot(x, 
+          col = "lightblue",
+          border = "gray20",
+          horizontal = TRUE,
+          main = title,
+          xlab = title)
+}
+
+# top-center
+plot_box(df$ClaimNb, "ClaimNb")
+
+# the rest in order
+plot_box(df$Exposure,   "Exposure")
+plot_box(df$VehPower,   "VehPower")
+plot_box(df$VehAge,     "VehAge")
+plot_box(df$DrivAge,    "DrivAge")
+plot_box(df$BonusMalus, "BonusMalus")
+plot_box(df$Density,    "Density")
+
+par(op)
+layout(1)
+
+
+
+# ClaimNb > 10 remove 
+df <- df %>%
+  filter(ClaimNb <= 10)
+
+# Driver's age outlier handling
+
+library(DescTools)
+
+winsor <- function(x, p = c(0.01, 0.99)) {
+  qs <- stats::quantile(x, probs = p, na.rm = TRUE, names = FALSE)
+  pmin(pmax(x, qs[1]), qs[2])
+}
+
+vars_to_cap <- c("DrivAge")
+df[vars_to_cap] <- lapply(df[vars_to_cap], winsor)
+```
+
+Figure 3: Boxplots for checking outliers of numerical variables
+
+```{r}
+#transform predictors
+top3 <- names(sort(table(df$VehBrand), decreasing = TRUE))[1:min(3, nlevels(factor(df$VehBrand)))]
+df <- df %>%
+  filter(Exposure > 0, Density > 0) %>%
+  mutate(
+    VehAge_grp  = cut(VehAge, c(-Inf, 0, 10, Inf), labels = c("0","1-10","11+"), right = TRUE),
+    VehPower_hi = factor(ifelse(VehPower <= 8, "low", "high"), levels = c("low","high")),
+    VehBrand3   = factor(ifelse(VehBrand %in% top3, as.character(VehBrand), "Other")),
+    Density_log = log(Density)
+  )
+```
+
+# Methodology
+
+## Correlation and multicollinearity
+
+The correlation matrix and VIF results showed moderate correlation between DrivAge and BonusMalus, and high multicollinearity for Area and Density_log (GVIF \> 10). To reduce redundancy and improve model stability, BonusMalus, and Density_log have excluded from the GML model predictors.\
+
+```{r}
+library(corrplot)
+# numeric-only (post-transform)
+num_df <- df %>%
+  dplyr::select(where(is.numeric)) %>%      # keep numeric cols only
+  dplyr::select(-Density) %>%               # prefer Density_log
+  dplyr::select(where(~ var(., na.rm = TRUE) > 0))  # drop constants
+
+# Pearson correlations
+C <- cor(num_df, use = "pairwise.complete.obs", method = "pearson")
+cat("Correlation Matrix:\n")
+# 4) Heatmap with coefficients
+corrplot(C,
+         method = "color", type = "upper", diag = FALSE,
+         tl.col = "black", tl.srt = 45,
+         col = colorRampPalette(c("navy","white","firebrick3"))(200),
+         addCoef.col = "black", number.cex = 0.7, number.digits = 2
+)
+```
+
+Figure 4: Correlation. The darker shade indicates stronger corraltion. Red is positive correlation and blue is negative correlation.\
+
+```{r}
+library(car)     
+library(performance) 
+
+# keep Exposure>0 and cast factors
+df <- df %>% filter(Exposure > 0) %>%
+  mutate(
+    Area     = factor(Area),
+    Region   = factor(Region),
+    VehBrand3 = factor(VehBrand3),
+    VehGas   = factor(VehGas),
+    VehPower_hi= factor(VehPower_hi), 
+    VehAge_grp= factor(VehAge_grp), 
+  )
+base_form_full <- ClaimNb ~ Area+ Region + VehBrand3 + VehGas +
+  DrivAge + VehAge_grp + VehPower_hi + Density_log
+
+m_lm_full <- lm(base_form_full, data = df)
+cat("VIF:\n")
+print(car::vif(m_lm_full))
+performance::check_collinearity(m_lm_full)
+```
+
+## Split data into Train and Test Set
+
+The dataset was randomly divided into 80% for training and 20% for testing to let the model learn from one part of the data and check its accuracy on another. Setting the seed ensures the same split can be reproduced each time.\
+
+```{r}
+set.seed(123)
+# 80/20 split
+N      <- nrow(df)
+idx    <- sample.int(N)
+tr_idx <- idx[1:floor(0.8*N)]
+tr <- df[tr_idx, ]
+te <- df[-tr_idx, ]
+```
+
+## Model 1: GLM (Poisson)
+
+A Poisson generalized linear model is trained to estimate claim frequency using the selected predictors, accounting for policy exposure through an offset term. The model uses a log link function. This formulation ensures positive fitted values and captures multiplicative effects of predictors on the claim rate, allowing coefficients to be interpreted as rate ratios. A five-fold cross-validation was then performed to assess model consistency, followed by test-set predictions to measure overall predictive accuracy.\
+
+The results indicate that several predictors significantly influence claim frequency. Variables such as VehGas, DrivAge, VehAge_grp, VehPower_hi, and certain regional categories show strong statistical significance, suggesting they meaningfully affect the likelihood of claims. In contrast, many regional and brand variables were not significant, implying limited predictive contribution. Overall, the model demonstrates modest explanatory power, aligning with the low average claim frequency in the dataset.
+
+```{r}
+# 5-fold CV Poisson GLM (internally handled, no loop in your code)
+fit_tr_p <- glm(ClaimNb ~ Area + Region + VehBrand3 + VehGas +
+                DrivAge + VehAge_grp + VehPower_hi + offset(log(Exposure)), data = tr, family = poisson())
+cv     <- cv.glm(tr, fit_tr_p, K = 5)  
+
+# Test set prediction
+pred_te_p   <- predict(fit_tr_p, newdata = te, type = "response")
+test_rmse_p <- sqrt(mean((te$ClaimNb - pred_te_p)^2))
+cat("Test set RMSE:", test_rmse_p, "\n")
+summary(fit_tr_p)
+
+
+
+```
+
+## Model 2: GLM (Negative Binomial)
+
+A negative binomial (NB2) generalized linear model was fitted with a log link to model claim frequency and accommodate over-dispersion. This specification preserves positivity, captures multiplicative effects, and scales counts by exposure to model frequency per unit exposure. The results indicate that several predictors significantly influence claim frequency. Key variables such as VehGas, DrivAge, VehAge_grp, VehPower_hi, and VehBrand3=B12 demonstrate strong statistical effects, while numerous regional factors are also significant but negative, suggesting lower claim rates relative to the reference group and area wise factors showing positive significance indicating higher claim rates relative to the reference group. The estimated dispersion parameter (θ ≈ 0.77) confirms the presence of over-dispersion, validating the use of the negative binomial model, which provides a slightly improved fit over the Poisson model.
+
+```{r}
+#Neg_bin
+fit_tr_nb <- glm.nb(ClaimNb ~ Area + Region + VehBrand3 + VehGas +
+                      DrivAge + VehAge_grp + VehPower_hi + offset(log(Exposure)), data = tr, 
+                 na.action = na.exclude
+)
+# ---- 5-fold CV (still no loops in your code) ----
+cv <- cv.glm(tr, fit_tr_nb, K = 5)   
+# ---- Test prediction + RMSE ----
+pred_te_nb   <- predict(fit_tr_nb, newdata = te, type = "response")
+ok        <- !is.na(pred_te_nb) & !is.na(te$ClaimNb)
+test_rmse_nb <- sqrt(mean((te$ClaimNb[ok] - pred_te_nb[ok])^2))
+# ---- Outputs ----
+cat("Test set RMSE:", test_rmse_nb, "\n")
+summary(fit_tr_nb)
+
+
+```
+
+## Model 3: GLM (Zero Inflated Poisson)
+
+A zero-inflated Poisson (ZIP) model was estimated to account for the excess number of zero claims that standard Poisson or negative binomial models might not capture. A 5-fold cross-validation was performed to evaluate consistency, followed by test-set prediction to assess accuracy. This approach allows simultaneous modeling of both the claim occurrence (zero inflation) and claim count processes, improving fit for data with many zero observations. The zero-inflated Poisson (ZIP) results show that several predictors significantly affect both the claim frequency and the probability of observing structural zeros. In the count component, VehGas, DrivAge, VehAge_grp, VehBrand3=B12, and area and certain regional factors were statistically significant, indicating their influence on expected claim counts. In the zero-inflation component, VehAge_grp, VehGas, and VehBrand3=B12 notably increased the likelihood of zero claims, while VehPower_hi reduced it. The model achieved the lowest RMSE among the three, confirming that the ZIP framework better captures the excess zeros present in the data. The estimated dispersion parameter (θ ≈ 1.361) value near 1 indicates that the model’s variance closely matches the observed data variance, suggesting an adequate fit.
+
+```{r}
+#ZIP
+K <- 5
+folds <- sample(1:K, nrow(tr), replace = TRUE)
+cv_errors <- numeric(K)
+
+for (k in 1:K) {
+  # Split data into training and validation sets for the fold
+  train_fold <- tr[folds != k, ]
+  valid_fold <- tr[folds == k, ]
+  
+  # Fit model on training fold
+  fit_fold <- zeroinfl(
+    ClaimNb ~ Area + Region + VehBrand3 + VehGas + DrivAge + VehAge_grp + VehPower_hi + offset(log(Exposure)),
+    data = train_fold,
+    dist = "poisson"
+  )
+  
+  # Predict on validation fold and calculate squared error
+  pred_fold <- predict(fit_fold, newdata = valid_fold, type = "response")
+  cv_errors[k] <- mean((valid_fold$ClaimNb - pred_fold)^2)
+}
+
+# Calculate the average cross-validation RMSE
+#cv_rmse <- sqrt(mean(cv_errors))
+#cat("Cross-validation RMSE:", cv_rmse, "\n")
+
+
+fit_tr_zp <- zeroinfl(
+  ClaimNb ~ Area + Region + VehBrand3 + VehGas + DrivAge + VehAge_grp + VehPower_hi +
+    offset(log(Exposure)),
+  data = tr,
+  dist = "poisson"
+)
+
+# --- Test set evaluation with the final model ---
+pred_te_zp <- predict(fit_tr_zp, newdata = te, type = "response")
+test_rmse_zp <- sqrt(mean((te$ClaimNb - pred_te_zp)^2))
+cat("Test set RMSE:", test_rmse_zp, "\n")
+
+summary(fit_tr_zp)
+cat("Dispersion:")
+phi_zip_pear <- sum(residuals(fit_tr_zp, type="pearson")^2) / df.residual(fit_tr_zp)
+phi_zip_pear
+cat("AIC:")
+AIC(fit_tr_zp)
+
+
+```
+
+# Result
+
+## RMSE, AIC
+
+The Zero-Inflated Poisson (ZIP) model shows the lowest AIC and RMSE among the three. That means it provides the best overall fit and highest predictive accuracy, suggesting that accounting for excess zeros in the data improves performance. The Poisson and Negative Binomial models perform similarly, but their higher AIC values indicate they’re less efficient at balancing model fit and complexity compared to the ZIP model.\
+Table 2:Model performance\
+
+| Model                 | AIC       | RMSE  |
+|-----------------------|-----------|-------|
+| Poisson               | 230,572.0 | 0.236 |
+| Negative Binomial     | 229,757.0 | 0.236 |
+| Zero-Inflated Poisson | 225,235.8 | 0.235 |
+
+## Model 1: GLM (Poisson)
+
+The Poisson GLM captures overall claim frequency trends but struggles with higher claim counts. Residuals show uneven variance, and test predictions mostly underestimate large observed values—indicating over-dispersion and the need for a Negative Binomial model.\
+
+```{r}
+
+# Poisson GLM:
+par(mfrow = c(1, 2), mar = c(4.2, 4.6, 3, 1))
+
+# Left: Residuals vs Fitted (train)
+r_train <- residuals(fit_tr_p, type = "pearson")
+f_train <- fitted(fit_tr_p)
+plot(f_train, r_train, pch = 16, cex = 0.6,
+     xlab = "Fitted (train)", ylab = "Residuals (train)",
+     main = "Residuals vs Fitted (train)")
+abline(h = 0, lty = 2)
+
+# Right: Predicted vs Observed (test)
+ok  <- !is.na(pred_te_p) & !is.na(te$ClaimNb)
+yte <- te$ClaimNb[ok]
+pte <- pred_te_p[ok]
+plot(pte, yte, pch = 16, cex = 0.6,
+     xlab = "Predicted (test)", ylab = "Observed (test)",
+     main = "Predicted vs Observed (test)")
+abline(0, 1, lty = 2, lwd = 2)
+
+```
+
+Figure 5: Model diagnostics for model 1.\
+
+## Model 2: GLM (Negative Binomial)
+
+The Negative Binomial GLM reduces over-dispersion compared to the Poisson model, as seen from the lower residual deviance and dispersion parameter. However, residuals still show a pattern of higher variance at low fitted values, and test predictions underestimate large observed counts. Overall, the model fits better than Poisson but still struggles with excess zeros and rare high claims.\
+
+```{r}
+#NegBin GLM:
+par(mfrow = c(1, 2), mar = c(4.2, 4.6, 3, 1))
+
+# Left: Residuals vs Fitted (train)
+r_train_nb <- residuals(fit_tr_nb, type = "pearson")
+f_train_nb <- fitted(fit_tr_nb)
+plot(f_train_nb, r_train_nb, pch = 16, cex = 0.6,
+     xlab = "Fitted (train)", ylab = "Residuals (train)",
+     main = "Residuals vs Fitted (train)")
+abline(h = 0, lty = 2)
+
+# Right: Predicted vs Observed (test)
+ok_nb  <- !is.na(pred_te_nb) & !is.na(te$ClaimNb)
+yte_nb <- te$ClaimNb[ok_nb]
+pte_nb <- pred_te_nb[ok_nb]
+plot(pte_nb, yte_nb, pch = 16, cex = 0.6,
+     xlab = "Predicted (test)", ylab = "Observed (test)",
+     main = "Predicted vs Observed (test)")
+abline(0, 1, lty = 2, lwd = 2)
+
+```
+
+Figure 6: Model diagnostics for model 2.\
+
+## Model 3: GLM (Zero Inflated Poisson)
+
+The Zero-Inflated Poisson model further improves fit by accounting for excess zeros. Residuals are more concentrated around zero, and dispersion decreases compared to the standard Poisson. Predictions align better with observed low claim counts, though higher claims remain slightly underestimated. Overall, this model handles zero-heavy data more effectively.\
+
+```{r}
+# ZIP (zeroinfl):
+par(mfrow = c(1, 2), mar = c(4.2, 4.6, 3, 1))
+
+# Left: Residuals vs Fitted (train)
+r_train_zp <- residuals(fit_tr_zp, type = "pearson")
+f_train_zp <- fitted(fit_tr_zp)
+plot(f_train_zp, r_train_zp, pch = 16, cex = 0.6,
+     xlab = "Fitted (train)", ylab = "Residuals (train)",
+     main = "Residuals vs Fitted (train)")
+abline(h = 0, lty = 2)
+
+# Right: Predicted vs Observed (test)
+ok_zp  <- !is.na(pred_te_zp) & !is.na(te$ClaimNb)
+yte_zp <- te$ClaimNb[ok_zp]
+pte_zp <- pred_te_zp[ok_zp]
+plot(pte_zp, yte_zp, pch = 16, cex = 0.6,
+     xlab = "Predicted (test)", ylab = "Observed (test)",
+     main = "Predicted vs Observed (test)")
+abline(0, 1, lty = 2, lwd = 2)
+
+```
+
+Figure 7: Model diagnostics for model 3.\
+
+## AUC-ROC
+
+The ROC curve shows that the Zero-Inflated Poisson (ZIP) model achieves the highest AUC (0.639), outperforming both the Poisson and Negative Binomial models (AUC = 0.621 each). This indicates that the ZIP model better distinguishes between zero and nonzero claims, confirming its superior predictive performance for zero-heavy data.\
+
+```{r}
+y_te <- as.integer(te$ClaimNb > 0)
+
+prob_p  <- 1 - exp(-pred_te_p)
+theta   <- fit_tr_nb$theta
+prob_nb <- 1 - (theta / (theta + pred_te_nb))^theta
+pi_te   <- predict(fit_tr_zp, newdata = te, type = "zero")
+lam_te  <- predict(fit_tr_zp, newdata = te, type = "count")
+prob_zp <- 1 - (pi_te + (1 - pi_te) * exp(-lam_te))
+
+roc_p  <- roc(y_te, prob_p)
+roc_nb <- roc(y_te, prob_nb)
+roc_zp <- roc(y_te, prob_zp)
+
+plot(roc_p, lwd=2, main="ROC Curve (Test Set)")
+lines(roc_nb, col="red", lwd=2)
+lines(roc_zp, col="blue", lwd=2)
+abline(0,1,lty=2)
+legend("bottomright", c(
+  paste("Poisson AUC:", round(auc(roc_p),3)),
+  paste("NegBin AUC:", round(auc(roc_nb),3)),
+  paste("ZIP AUC:", round(auc(roc_zp),3))
+), col=c("black","red","blue"), lwd=2, bty="n")
+
+```
+
+Figure 8: AUC-ROC Curve.\
+
+# Discussion
+
+This study evaluated Poisson, Negative Binomial, and Zero-Inflated Poisson (ZIP) models to estimate automobile claim frequency using the freMTPL2freq dataset. The ZIP model achieved the best performance, with the lowest AIC (225,572.5) and RMSE (0.235), confirming that explicitly modeling excess zeros substantially improves predictive accuracy. The Poisson model showed clear over-dispersion, and while the Negative Binomial model mitigated this, both were less effective in handling the large proportion of zero claims.
+
+Key predictors such as driver age, vehicle age, power, and fuel type significantly influenced claim frequency, while regional effects indicated spatial variability in risk factors. These findings suggest that both demographic and contextual variables contribute to claim occurrence.
+
+The results have practical relevance for insurance pricing and underwriting. Incorporating zero-inflated or hurdle models can improve premium calibration and risk segmentation, particularly for portfolios dominated by zero claims. Recognizing regional and vehicle-based variations can further enhance targeted pricing and risk management strategies.
+
+However, several limitations remain. The dataset is cross-sectional, preventing analysis of temporal effects. Important behavioral and environmental factors were unavailable, and the ZIP model assumes constant zero-inflation probability across policyholders. Moreover, as the data originate from a single insurer, the results may not fully generalize. Despite these constraints, the study demonstrates that addressing zero inflation and over-dispersion yields more accurate and interpretable claim frequency models, offering valuable insights for actuarial modeling and insurance decision-making. However, the result interpretation is incomplete due to absence of data dictionary.
+
+# Conclusion
+
+The analysis compared Poisson, Negative Binomial, and Zero-Inflated Poisson (ZIP) models to predict insurance claim frequency. After addressing multicollinearity and transforming skewed variables, the ZIP model demonstrated the best overall fit and predictive accuracy, confirming that accounting for excess zeros substantially improves model performance. Key predictors included driver age, vehicle age, fuel type, vehicle power, and regional factors. Insurers are advised to adopt the ZIP model for claim frequency estimation, prioritize these influential predictors in pricing strategies, and use predicted claim probabilities to identify different risk segments.Regular model validation is recommended to ensure continued reliability and alignment with business objectives.
+
+# Future Work
+
+The model performance can be improved by backward selection in recurrring manner. Here, the predictor filtering (such as keeping DriverAge and dropping BonusMalus and keeping Area and dropping Density) was also done without checking of the dropped predictor's would provide better performance or stand out as better predictors for the models. These gaps should be addressed and check for the improvement of the models.
+
+# References
+
+Dutang, C., & Charpentier, A. (2016). Casdatasets: Insurance datasets [R package version 1.0-6].\
+FLOSER. (2019). French motor claims datasets fremtpl2freq [Data set]. Retrieved October 8, 2025, from, <https://www.kaggle.com/datasets/floser/french-motor-claims-datasets-fremtpl2freq>\
+Marciuc, M. A. (2024). Predictive Modeling for Claims in Automobile Insurance. Review of Economic Studies and Research Virgil Madgearu, 17(2), 79-99.\
+Simmachan, T., & Boonkrong, P. (2024). A Comparison of Count and Zero-Inflated Regression Models for Predicting Claim Frequencies in Thai Automobile Insurance. Lobachevskii Journal of Mathematics, 45(12), 6400-6414.\
+
+# Supplimentary Materials
+
+## Checking VIF
+
+VIF been checked for variables in trial error form to ensure removed variables are not redundant removal.
+
+```{r}
+#import libraries
+library(data.table) 
+library(ggplot2) 
+library(splines)
+library(MASS) 
+library(DHARMa)
+library(dplyr)
+library(MASS)      
+library(pROC)      
+library(ggplot2)
+library(patchwork)
+library(boot)
+require(pscl)
+library(pROC)
+
+# load data
+df <- as.data.frame(readxl::read_excel("/Users/mobasshirazaman/Library/CloudStorage/OneDrive-NorthernIllinoisUniversity/ASU/Fall2025/ACT560/Project1MZ/freMTPL2freq.xlsx"))
+
+#transform predictors
+top3 <- names(sort(table(df$VehBrand), decreasing = TRUE))[1:min(3, nlevels(factor(df$VehBrand)))]
+df <- df %>%
+  filter(Exposure > 0, Density > 0) %>%
+  mutate(
+    VehAge_grp  = cut(VehAge, c(-Inf, 0, 10, Inf), labels = c("0","1-10","11+"), right = TRUE),
+    VehPower_hi = factor(ifelse(VehPower <= 8, "low", "high"), levels = c("low","high")),
+    VehBrand3   = factor(ifelse(VehBrand %in% top3, as.character(VehBrand), "Other")),
+    Density_log = log(Density)
+  )
+
+
+library(car)     
+library(performance) 
+
+# keep Exposure>0 and cast factors
+df <- df %>% filter(Exposure > 0) %>%
+  mutate(
+    Area     = factor(Area),
+    Region   = factor(Region),
+    VehBrand3 = factor(VehBrand3),
+    VehGas   = factor(VehGas),
+    VehPower_hi= factor(VehPower_hi), 
+    VehAge_grp= factor(VehAge_grp), 
+  )
+# with all 
+base_form_full <- ClaimNb ~ Area+ Region + VehBrand3 + VehGas +
+  DrivAge + VehAge_grp + VehPower_hi + Density_log
+
+m_lm_full <- lm(base_form_full, data = df)
+# quick readout
+print(car::vif(m_lm_full))
+performance::check_collinearity(m_lm_full)
+
+# without density
+base_form_full <- ClaimNb ~ Area+ Region + VehBrand3 + VehGas +
+  DrivAge + VehAge_grp + VehPower_hi 
+
+m_lm_full <- lm(base_form_full, data = df)
+# quick readout
+print(car::vif(m_lm_full))
+performance::check_collinearity(m_lm_full)
+
+# without area 
+base_form_full <- ClaimNb ~  Region + VehBrand3 + VehGas +
+  DrivAge + VehAge_grp + VehPower_hi + Density_log
+
+m_lm_full <- lm(base_form_full, data = df)
+# quick readout
+print(car::vif(m_lm_full))
+performance::check_collinearity(m_lm_full)
+
+
+
+```
