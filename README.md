@@ -1,4 +1,9 @@
 # Generalized-Linear-Model
+# 📄 Author
+Mobasshira Zaman
+Ph.D. Student, Industrial Engineering
+Arizona State University
+
 # Generalized Linear Modeling for Motor Claim Frequency
 
 This repository contains an actuarial modeling project applying **Generalized Linear Models (GLM)** to predict **French Motor Third-Party Liability (MTPL) claim frequency** using the dataset `freMTPL2freq.xlsx`.
