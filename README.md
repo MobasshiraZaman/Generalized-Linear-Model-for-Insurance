@@ -1,75 +1,31 @@
-# Generalized-Linear-Model
-# 📄 Author
-Mobasshira Zaman
-Ph.D. Student, Industrial Engineering
-Arizona State University
+# Insurance Analytics Projects  
+Author: Mobasshira Zaman  
+Ph.D. Student, Industrial Engineering – Arizona State University  
 
-# Generalized Linear Modeling for Motor Claim Frequency
-
-This repository contains an actuarial modeling project applying **Generalized Linear Models (GLM)** to predict **French Motor Third-Party Liability (MTPL) claim frequency** using the dataset `freMTPL2freq.xlsx`.
+This repository contains two actuarial modeling projects using R for insurance analytics.
 
 ---
 
-## 📁 Repository Contents
+## 📌 Project 1 – Motor Claim Frequency (GLM)
+Dataset: `freMTPL2freq.xlsx`  
+Methods: Poisson GLM, Quasi-Poisson, Offset for exposure  
 
-- **Project1.Rmd** – Main R Markdown script containing the full analysis  
-- **Project1.html** – Rendered HTML report  
-- **freMTPL2freq.xlsx** – Dataset used for modeling  
-- **README.md** – Project documentation (this file)
-
----
-
-## 📘 Project Overview
-
-This project demonstrates end-to-end actuarial frequency modeling using:
-
-- Poisson GLM  
-- Over-dispersed (quasi-Poisson) GLM  
-- Exposure modeling through offsets  
-- Categorical variable handling  
-- Goodness-of-fit evaluation  
-- Interpretation of model coefficients  
-
-The analysis explores driver features, vehicle characteristics, and regional information to understand claim frequency patterns.
+Files:
+- `Project1.Rmd` – Model building & analysis  
+- `Project1.html` – Rendered output  
 
 ---
 
-## 🧠 Methods Used
+## 📌 Project 2 – Workers’ Compensation Loss Reserving
+Dataset: 'wkcomp_pos.xlsx'
+Methods: Chain Ladder, Mack, GLM incremental approach  
 
-- **Generalized Linear Models**
-  - Poisson
-  - Quasi-Poisson  
-- **Exposure adjustment using log-offset**  
-- **Deviance residuals and diagnostics**
-- **Model comparison (AIC, deviance)**  
-
----
-
-## 📊 Dataset
-
-`freMTPL2freq.xlsx` includes variables such as:
-
-- Exposure  
-- Number of claims  
-- Driver age  
-- Vehicle power  
-- Vehicle age  
-- Region  
-- Bonus-Malus coefficient  
+Files:
+- `Loss Reserving Analysis of Workers’ Compensation Claims.Rmd` – Model building & analysis  
+- `Loss Reserving Analysis of Workers’ Compensation Claims.html` – Rendered output  
 
 ---
 
-## ▶️ How to Run
-
-1. Install required R packages:
-
+## 🔧 Requirements
 ```r
-install.packages(c("tidyverse", "readxl", "ggplot2", "dplyr"))
-
-
-
-2. Open Project1.Rmd in RStudio.
-
-3. Click Knit → Knit to HTML.
-
-4. The output file Project1.html will be generated automatically.
+install.packages(c("tidyverse","readxl","ChainLadder","dplyr","ggplot2"))
