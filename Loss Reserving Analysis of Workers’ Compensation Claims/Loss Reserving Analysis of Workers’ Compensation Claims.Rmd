@@ -1,0 +1,1040 @@
+---
+title: "Loss Reserving Analysis of Workers’ Compensation Claims"
+author: "Mobasshira Zaman"
+subtitle: "ACT 560: Regression Modeling: Insurance"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+fontsize: 11pt
+
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+    df_print: paged
+    code_folding: "show"
+    theme: cosmo
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    latex_engine: xelatex   
+    keep_tex: false
+
+mainfont: "Times New Roman"
+# Optional (better math fonts):
+monofont: "Courier New"
+mathfont: "TeX Gyre Termes Math"
+
+header-includes:
+  - |
+    <style>
+      /* Force Times New Roman + 11pt across the HTML */
+      body, .table, .table td, .table th, p, li, code, pre, .tocify, .tocify ul li a {
+        font-family: "Times New Roman", Times, serif !important;
+        font-size: 11pt !important;
+        line-height: 1.4;
+      }
+      /* Headings scaled from an 11pt base */
+      h1 { font-size: 22pt !important; }
+      h2 { font-size: 18pt !important; }
+      h3 { font-size: 14pt !important; }
+      h4, h5, h6 { font-size: 12pt !important; }
+
+      /* Code blocks slightly smaller so they don’t overrun */
+      pre, code { font-family: "Courier New", Courier, monospace !important; font-size: 10pt !important; }
+
+      /* Keep your centered title block behavior */
+      body > div#header, body > header, .title-block {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;  /* vertical */
+        align-items: center;      /* horizontal */
+        text-align: center;
+      }
+    </style>
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  echo = TRUE,
+  results = 'show'
+)
+```
+
+# Executive Summary
+
+<!-- Workers’ compensation reserves are estimated using three standard loss development approaches applied to one insurer from the CAS Schedule P database. The analysis uses cumulative incurred loss triangles at the accident-year/development-year level to quantify outstanding liabilities as of the most recent evaluation. -->
+
+<!-- For the Statw Farm Mut Grp, the Chain Ladder and Mack Chain-Ladder methods both produce a relatively small total incurred-basis IBNR reserve of about 4,450. This reflects the fact that most accident years in the triangle are already highly developed, with only the most recent year (1997) showing any material remaining development. The Mack model additionally provides an estimated standard error of about 31,966 for the total IBNR, leading to a wide 95% confidence interval that includes zero and negative values. This indicates substantial parameter and process uncertainty relative to the small point estimate. -->
+
+<!-- A generalized linear model (GLM) reserve model based on an over-dispersed Poisson specification is also fitted to the incremental triangle. The GLM produces a higher total IBNR estimate of roughly 40,375 with a standard error of about 28,094. The GLM places more weight on future development for the latest accident years, particularly 1997, than the traditional Chain Ladder methods. Overall, the three approaches show that it is largely mature and well developed, with residual reserve risk mainly concentrated in the most recent accident years and with considerable statistical uncertainty around the relatively small remaining IBNR. -->
+
+This project examines loss reserving for a Workers’ Compensation portfolio using positional data from the CAS NAIC Schedule P database for a single insurer (State Farm Mut Grp). A cumulative incurred loss triangle was constructed for accident years 1988–1997 and analyzed using three standard reserving approaches such as, the deterministic Chain Ladder method, the stochastic Mack Chain-Ladder model, and an over-dispersed Poisson GLM fitted to incremental incurred losses. Diagnostic plots and summary statistics were used to assess development patterns, model fit, and parameter uncertainty.
+
+Results show that Chain Ladder and Mack produce nearly identical total IBNR of about 4400 dollars, which shows that the portfolio is mostly mature with minimal expected future emergence. However, Mack’s wide 95% confidence interval (approximately −58000 to 67000 dollars) and the GLM’s much higher total IBNR estimate (~40000 dollars due to the immature 1997 accident year) shows a uncertainty. Hence, a reasonable strategy is to treat Chain Ladder as a baseline best estimate. Mack or GLM for upper-bound reserves, especially where recent accident years remain less developed is a logical choice.
+
+# Introduction
+
+Loss reserving is a core task in property-casualty insurance, as insurers must hold sufficient reserves to cover future claim payments arising from past policies (Brown & Gottlieb, 2007). For long-tailed lines such as Workers’ Compensation, claims often develop over many years, so actuaries rely on statistical techniques that extrapolate past development patterns into the future. Accurate reserve estimation is essential for financial reporting, pricing, and capital management.
+
+This project analyzes Workers’ Compensation loss development for a single insurer from the Casualty Actuarial Society’s NAIC Schedule P research database (Casualty Actuarial Society, 2011). The primary aim is to construct standard loss development triangles and compare reserve estimates from three approaches such as, the deterministic Chain Ladder method, the stochastic Mack Chain-Ladder model, and a GLM-based reserving model for a selected company (State Farm Mut Grp). By examining the output from each model and comparing their resulting reserve estimates and uncertainty measures, the study illustrates the behavior and assumptions of each method for a relatively mature.
+
+```{r}
+
+```
+
+# Data Descripsion
+
+## Data Source
+
+The data for this study are sourced from the Casualty Actuarial Society (CAS) Schedule P Loss Reserving Database, which compiles loss development information reported by U.S. insurers to the NAIC. The Workers’ Compensation positional dataset provides detailed accident year and development information for analyzing claim payment patterns (Casualty Actuarial Society, 2011). Resulting triangles represent one company’s experience over 10 accident years and up to 10 development lags.
+
+Table 1 compensation positional dataset” summarizes the key fields used in the analysis. The variables GRCODE and GRNAME identify the insurer, while AccidentYear and DevelopmentYear locate each observation in the loss development grid. DevelopmentLag captures the time since the accident and serves as the development dimension (triangle columns). The main loss and premium variables (IncurLoss_D, CumPaidLoss_D, BulkLoss_D, and the earned premium fields) describe loss experience and exposure. For this project, IncurLoss_D is the primary modeling variable used to construct the cumulative incurred loss triangle. Several other variables (e.g., EarnedPremNet_D, Single) are used only for company selection and filtering; they are not directly modeled.
+
+```{r}
+library(knitr)
+
+data_desc <- data.frame(
+  Variable = c("GRCODE","GRNAME","AccidentYear","DevelopmentYear","DevelopmentLag",
+               "CumPaidLoss_D","IncurLoss_D","BulkLoss_D",
+               "EarnedPremDIR_D","EarnedPremCeded_D","EarnedPremNet_D",
+               "PostedReserve97_D","Single"),
+
+  Description = c(
+    "NAIC group code identifier for the insurer",
+    "Name of insurance company/group",
+    "Year in which the loss event occurred",
+    "Calendar year of development",
+    "Number of years since accident",
+    "Cumulative paid losses for Workers’ Compensation",
+    "Cumulative incurred losses",
+    "Bulk IBNR reserves",
+    "Direct earned premium",
+    "Ceded earned premium",
+    "Net earned premium",
+    "Posted reserve as of 1997",
+    "Indicator if entity is individual (1) or group (0)"
+  ),
+
+  Role = c(
+    "Identifies company/group",
+    "Label only",
+    "Triangle origin (i)",
+    "Informational",
+    "Triangle column (j)",
+    "Not used in this project",
+    "Primary modeling variable",
+    "Not used",
+    "Context only",
+    "Context only",
+    "Used for company selection only",
+    "Informational",
+    "Used for filtering"
+  )
+)
+
+kable(data_desc, caption = "Table 1: Variable definitions for the workers’ compensation positional dataset")
+
+```
+
+## Exploratory Data Analysis
+
+The dataset contains 13,200 observations and 13 variables, confirming that the positional file is fairly large and covers multiple insurers and years. The group identifier GRCODE is numeric, GRNAME is character, and the accident and development years are recorded as numeric year values. AccidentYear ranges from 1988 to 1997, giving 10 accident years. DevelopmentYear ranges from 1988 to 2006, corresponding to up to 10 years of development for the earliest accident year. IncurLoss_D can take small negative values, which may correspond to adjustments or corrections in reported losses.
+
+```{r}
+# =========================
+# LIBRARIES
+# =========================
+library(knitr)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(ChainLadder)
+library(readxl)
+library(e1071)
+library(kableExtra)
+
+# =========================
+# LOAD DATA
+# =========================
+df <- as.data.frame(read_excel("/Users/mobasshirazaman/Library/CloudStorage/OneDrive-NorthernIllinoisUniversity/ASU/Fall2025/ACT560/Project2/wkcomp_pos.xlsx"))
+
+str(df)
+summary(df)
+```
+
+The missing-value and cardinality summary shows that there are no missing values in any of the variables used in the project, which simplifies the construction of triangles and the fitting of models. The cardinality counts confirm that there are 132 distinct insurer groups (GRCODE and GRNAME), 10 accident years and 10 development lags appear, and the primary loss variable IncurLoss_D has 5,899 distinct values, reflecting substantial variation in incurred amounts.Because there are no NA values, no imputation or data cleaning is needed before forming the loss development triangles.
+
+```{r}
+# =========================
+# MISSING VALUES & CARDINALITY
+# =========================
+summary_table <- data.frame(
+  Missing_Values = colSums(is.na(df)),
+  Cardinality = sapply(df, function(x) length(unique(x)))
+)
+
+kable(summary_table,  caption = "Table 2: Missing values and cardinality checking for data.")
+```
+
+The bar plot of the top 20 companies by total latest incurred loss highlights large differences in portfolio size across insurer groups. A few companies account for much larger totals, suggesting they write significantly more Workers’ Compensation business. For this project, a single company (here, "State Farm Mut Grp") is selected for detailed analysis. This choice provides a relatively large and stable triangle for that insurer, while keeping the modeling focused on one homogeneous rather than aggregating multiple companies.
+
+```{r}
+# =========================
+# TOP 20 COMPANIES BARPLOT
+# =========================
+incur_latest <- df %>%
+  group_by(GRCODE, GRNAME, AccidentYear) %>%
+  summarise(IncurLatest = max(IncurLoss_D, na.rm = TRUE), .groups = "drop")
+
+company_total <- incur_latest %>%
+  group_by(GRCODE, GRNAME) %>%
+  summarise(TotalIncur = sum(IncurLatest, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(TotalIncur)) %>%
+  slice_head(n = 20)
+
+ggplot(company_total,
+       aes(x = reorder(GRNAME, TotalIncur), y = TotalIncur)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  theme_minimal()
+```
+
+Figure 1: Companies with the highest total incur loss.
+
+## Data Pre-porcessing
+
+Data was filtered for only State Farm Mut Grp and the filtered data has accident years from 1988 to 1997 (10 years). Incurred losses rise from ~128K in 1988 to over 250K in the early 1990s before declining toward ~130K by 1997. Older years show left-skewed development (losses mostly recognized early), whereas recent years are more symmetric, indicating continuing development.
+
+Table 3: Desceriptive Statistics for State farm Mut Grp
+```{r}
+# =========================
+# FILTER NJM DATA
+# =========================
+njm_incur <- df %>%
+  filter(GRNAME == "State Farm Mut Grp") %>%
+  select(AccidentYear, DevelopmentLag, IncurLoss_D)
+
+# =========================
+# DESCRIPTIVE STATISTICS TABLE
+# =========================
+njm_year_stats <- njm_incur %>%
+  group_by(AccidentYear) %>%
+  summarise(
+    Mean = mean(IncurLoss_D, na.rm = TRUE),
+    StdDev = sd(IncurLoss_D, na.rm = TRUE),
+    Min = min(IncurLoss_D, na.rm = TRUE),
+    Max = max(IncurLoss_D, na.rm = TRUE),
+    Median = median(IncurLoss_D, na.rm = TRUE),
+    SampleSize = sum(!is.na(IncurLoss_D)),
+    Skewness = e1071::skewness(IncurLoss_D, na.rm = TRUE, type = 2),
+    .groups = "drop"
+  ) %>%
+  mutate(AccidentYear = as.character(AccidentYear))   
+
+njm_overall <- njm_incur %>%
+  summarise(
+    AccidentYear = "All",
+    Mean = mean(IncurLoss_D, na.rm = TRUE),
+    StdDev = sd(IncurLoss_D, na.rm = TRUE),
+    Min = min(IncurLoss_D, na.rm = TRUE),
+    Max = max(IncurLoss_D, na.rm = TRUE),
+    Median = median(IncurLoss_D, na.rm = TRUE),
+    SampleSize = sum(!is.na(IncurLoss_D)),
+    Skewness = e1071::skewness(IncurLoss_D, na.rm = TRUE, type = 2)
+  )
+
+
+njm_table1 <- bind_rows(njm_year_stats, njm_overall)
+
+# Display
+kable(njm_table1)
+```
+
+The heatmap shows losses increasing quickly in early development and stabilizing for older accident years. The latest years remain less developed and drive remaining IBNR. Overall, the triangle is mature with limited future growth expected.
+
+```{r}
+library(dplyr)
+library(ChainLadder)
+
+# =========================
+# CREATE CUMULATIVE TRIANGLE 
+# =========================
+library(dplyr)
+library(ChainLadder)
+
+# Use only this filtered NJM data
+njm_incur <- df %>%
+  filter(GRNAME == "State Farm Mut Grp") %>%
+  select(AccidentYear, DevelopmentLag, IncurLoss_D)
+
+min_ay  <- min(njm_incur$AccidentYear)
+max_lag <- max(njm_incur$DevelopmentLag)
+
+njm_incur_tri <- njm_incur %>%
+  # keep only the upper-left triangle:
+  # AY = min_ay     -> lags 1..10
+  # AY = min_ay+1   -> lags 1..9
+  # ...
+  # AY = min_ay+9   -> lag 1 only
+  filter(DevelopmentLag <= max_lag - (AccidentYear - min_ay)) %>%
+  arrange(AccidentYear, DevelopmentLag)
+
+incur_cum_triangle <- as.triangle(
+  njm_incur_tri,
+  origin = "AccidentYear",
+  dev    = "DevelopmentLag",
+  value  = "IncurLoss_D"
+)
+
+# incur_cum_triangle
+
+```
+
+```{r cum_triangle_heatmap, echo=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+# Start from the actual cumulative data frame
+heat_df <- njm_incur_tri %>%
+  select(AccidentYear, DevelopmentLag, IncurLoss_D)
+
+# Make sure we have a full AY × Dev grid so missing cells show as blank
+heat_df <- heat_df %>%
+  complete(
+    AccidentYear = full_seq(AccidentYear, 1),
+    DevelopmentLag = full_seq(DevelopmentLag, 1)
+  )
+
+# Convert to factors for nice axes
+heat_df$AccidentYear <- factor(
+  heat_df$AccidentYear,
+  levels = sort(unique(heat_df$AccidentYear), decreasing = TRUE)
+)
+# heat_df$AccidentYear  <- factor(heat_df$AccidentYear,
+#                                 levels = sort(unique(heat_df$AccidentYear)))
+heat_df$DevelopmentLag <- factor(heat_df$DevelopmentLag,
+                                 levels = sort(unique(heat_df$DevelopmentLag)))
+
+ggplot(heat_df, aes(x = DevelopmentLag, y = AccidentYear, fill = IncurLoss_D)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = ifelse(is.na(IncurLoss_D), "",
+                               round(IncurLoss_D, 0))),
+            size = 3)  +
+  scale_fill_gradientn(
+    colours = c("red", "yellow", "blue"),
+    na.value = "white"
+  )  +
+  labs(
+    title = "Heatmap of Cumulative Incurred Losses by AY and Development Lag",
+    x = "Development Lag",
+    y = "Accident Year",
+    fill = "Incurred"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
+
+```
+
+Figure 2: Heatmap of Cumulative Incurred Losses by AY and Development Lag.
+
+Cumulative incurred losses rise sharply early and then level off, showing early claim recognition.  The older years fully developed and stable while recent years remain less mature and more uncertain. Yet all exhibit similar development patterns across years.
+
+```{r}
+plot(incur_cum_triangle,
+     main = "Cumulative Incurred Development by Accident Year",
+     xlab = "Development Period",
+     ylab = "Cumulative Incurred Loss")
+```
+
+Figure 3: Cumulative Incurred Development by Accident Year
+
+Each panel shows cumulative incurred losses by accident year, with older years flattening quickly, indicating they are near ultimate values. Recent years have shorter, incomplete curves, reflecting greater uncertainty and remaining development.
+
+```{r}
+plot(incur_cum_triangle,
+     lattice = TRUE,
+     main = "Cumulative Development by Accident Year")
+```
+
+Figure 4: Cumulative Development by Accident Year
+
+# Method
+
+## Chain Ladder model
+
+The Chain Ladder model projects ultimates using historical development factors from the cumulative triangle. Most accident years show very small or even negative IBNR, indicating minimal expected future development and some potential redundancy. Only 1997 shows notable reserve (~14,890) due to limited maturity. Overall IBNR is low (~4,450), consistent with a largely run-off and stable.
+
+```{r diag_function, include=FALSE}
+# 6-panel diagnostic plot for a reserving model
+plot_reserving_diagnostics <- function(
+  method_name,
+  latest_vec,       # named vector: latest cumulative by AY
+  ultimate_vec,     # named vector: ultimate by AY
+  cum_triangle,     # cumulative triangle (matrix)
+  inc_obs,          # incremental observed triangle (matrix)
+  inc_fit           # incremental fitted triangle (matrix)
+) {
+  # Make sure shapes match
+  stopifnot(all(dim(inc_obs) == dim(inc_fit)))
+  stopifnot(all(dim(cum_triangle) == dim(inc_obs)))
+
+  # Origin, dev, calendar indices
+  origin_years <- as.numeric(rownames(cum_triangle))
+  dev_lags     <- as.numeric(colnames(cum_triangle))
+  n_origin     <- length(origin_years)
+  n_dev        <- length(dev_lags)
+
+  origin_mat <- matrix(rep(origin_years, each = n_dev),
+                       nrow = n_origin, ncol = n_dev)
+  dev_mat    <- matrix(rep(dev_lags, times = n_origin),
+                       nrow = n_origin, ncol = n_dev)
+  cal_mat    <- origin_mat + dev_mat  # simple calendar index
+
+  # Standardised residuals: (obs - fit)/sqrt(fit)
+  inc_fit_pos <- pmax(inc_fit, 1e-6)
+  resid_mat   <- (inc_obs - inc_fit_pos) / sqrt(inc_fit_pos)
+
+  keep <- !is.na(inc_obs)
+
+  resid_vec  <- resid_mat[keep]
+  fitted_vec <- inc_fit_pos[keep]
+  origin_vec <- origin_mat[keep]
+  dev_vec    <- dev_mat[keep]
+  cal_vec    <- cal_mat[keep]
+
+  op <- par(mfrow = c(3, 2), mar = c(4, 4, 3, 1))
+
+  ## 1) Barplot: Latest vs Forecast (IBNR)
+  ibnr_vec <- ultimate_vec - latest_vec
+  bar_mat  <- rbind(Latest = latest_vec,
+                    Forecast = pmax(ibnr_vec, 0))
+
+  barplot(bar_mat,
+          beside = FALSE,
+          main   = paste(method_name, "- Latest vs Forecast"),
+          ylab   = "Amount",
+          xlab   = "Origin period",
+          legend.text = c("Latest", "Forecast (IBNR)"),
+          args.legend = list(x = "topleft", bty = "n", cex = 0.8))
+
+  ## 2) Development curves (cumulative)
+  matplot(dev_lags, t(cum_triangle),
+          type = "l", lty = 1,
+          main = paste(method_name, "- Developments by origin"),
+          xlab = "Development period", ylab = "Amount")
+  text(x = max(dev_lags),
+       y = cum_triangle[, ncol(cum_triangle)],
+       labels = origin_years, pos = 4, cex = 0.7)
+
+  ## 3) Residuals vs fitted
+  plot(fitted_vec, resid_vec,
+       main = "Standardised residuals vs fitted",
+       xlab = "Fitted", ylab = "Standardised residuals")
+  abline(h = 0, col = "red")
+
+  ## 4) Residuals vs origin
+  plot(origin_vec, resid_vec,
+       main = "Standardised residuals by origin period",
+       xlab = "Origin period", ylab = "Standardised residuals")
+  abline(h = 0, col = "red")
+
+  ## 5) Residuals vs calendar period
+  plot(cal_vec, resid_vec,
+       main = "Standardised residuals by calendar period",
+       xlab = "Calendar period (AY + lag)",
+       ylab = "Standardised residuals")
+  abline(h = 0, col = "red")
+
+  ## 6) Residuals vs development period
+  plot(dev_vec, resid_vec,
+       main = "Standardised residuals by development period",
+       xlab = "Development period", ylab = "Standardised residuals")
+  abline(h = 0, col = "red")
+
+  par(op)
+}
+
+```
+
+```{r}
+# =========================
+# CHAIN LADDER MODEL
+# =========================
+# 1. Fit Chain Ladder factors
+cl_mod <- chainladder(incur_cum_triangle)
+
+# 2. Get the completed cumulative triangle (projected to ultimate)
+cl_full_triangle <- predict(cl_mod)   # completed cum triangle
+
+# 3. Latest observed cumulative losses (from original data)
+cl_latest <- getLatestCumulative(incur_cum_triangle)
+
+# 4. Ultimate losses from completed triangle
+cl_ultimate <- getLatestCumulative(cl_full_triangle)
+
+# 5. IBNR by accident year
+cl_reserve <- cl_ultimate - cl_latest
+
+# 6. Total IBNR (this is the real Chain Ladder reserve)
+cl_total_reserve <- sum(cl_reserve)
+
+cl_reserve        # AY-level reserves
+cl_total_reserve  # total reserve
+
+```
+
+The diagnostic plots show that Chain Ladder projections mostly align with the development pattern, but residuals display noticeable spread and negative deviations at later development periods, indicating some model misfit and uncertainty particularly for younger accident years.
+
+```{r cl_diagnostics, fig.width=7, fig.height=9}
+# Incremental observed and fitted for Chain Ladder
+cl_inc_obs <- cum2incr(incur_cum_triangle)
+cl_inc_fit <- cum2incr(cl_full_triangle)
+
+# Make sure row/col names are numeric for plotting
+rownames(incur_cum_triangle) <- as.numeric(rownames(incur_cum_triangle))
+colnames(incur_cum_triangle) <- as.numeric(colnames(incur_cum_triangle))
+rownames(cl_inc_obs)         <- rownames(incur_cum_triangle)
+colnames(cl_inc_obs)         <- colnames(incur_cum_triangle)
+rownames(cl_inc_fit)         <- rownames(incur_cum_triangle)
+colnames(cl_inc_fit)         <- colnames(incur_cum_triangle)
+
+plot_reserving_diagnostics(
+  method_name  = "Chain Ladder",
+  latest_vec   = cl_latest,
+  ultimate_vec = cl_ultimate,
+  cum_triangle = incur_cum_triangle,
+  inc_obs      = cl_inc_obs,
+  inc_fit      = cl_inc_fit
+)
+```
+
+Figure 5: Chain Ladder diagnostics showing development fit and standardized residual patterns.
+
+
+## Mack Chain-Ladder model
+
+The Mack Chain-Ladder model produces ultimate and IBNR estimates nearly identical to the deterministic Chain Ladder, with total IBNR of about 4,450. Its main contribution is the standard error and uncertainty measure — the total IBNR S.E. is ~31,966, giving a wide 95% CI of approximately [−58,205, 67,104]. This wide interval indicates high uncertainty relative to the small reserve estimate, typical for mature triangles where only the latest accident year has meaningful remaining development.
+
+```{r}
+# =========================
+# MACK MODEL 
+# =========================
+
+# 1. Fit Mack Chain-Ladder model (stochastic version of chain ladder)
+mack_mod <- MackChainLadder(
+  incur_cum_triangle,
+  est.sigma = "Mack"
+)
+
+# 2. AY-level results from summary (this part was already working)
+mack_sum      <- summary(mack_mod)
+mack_byorigin <- as.data.frame(mack_sum$ByOrigin)
+
+# Ultimate and IBNR by accident year
+mack_ultimate <- mack_byorigin[, "Ultimate"]
+mack_reserve  <- mack_byorigin[, "IBNR"]
+
+# 3. Total IBNR (just sum the AY IBNR)
+mack_total_reserve <- sum(mack_reserve)
+
+# 4. Standard error of TOTAL IBNR comes straight from the Mack object
+#    (this is the scalar you actually want, not the big matrix)
+mack_total_se <- as.numeric(mack_mod$Total.Mack.S.E)
+
+# 5. 95% CI for total IBNR (optional but nice)
+mack_total_lower95 <- mack_total_reserve - 1.96 * mack_total_se
+mack_total_upper95 <- mack_total_reserve + 1.96 * mack_total_se
+
+# Quick checks in console
+mack_ultimate        # AY-level ultimate
+mack_reserve         # AY-level IBNR (should match cl_reserve)
+mack_total_reserve   # scalar total IBNR
+mack_total_se        # scalar SE for total IBNR
+mack_total_lower95
+mack_total_upper95
+#mack_byorigin[,"Mack.S.E"]
+
+```
+
+Each panel shows incurred loss development for accident years, with Mack’s dotted line representing uncertainty. Older years flatten early, while younger years (1996–1997) still develop, driving most future IBNR. Hence, Chain Ladder and Mack produce small total reserves, but still require caution around recent years.
+
+```{r}
+plot(mack_mod, lattice = TRUE)
+
+```
+
+Figure 6: Chain Ladder & Mack Development by Origin Year
+
+Mack diagnostics show reserves concentrated in later accident years with uncertainty increasing in recent periods. The residual plots shows greater variability at higher lags, indicating uncertainty in tail development despite overall reasonable fit.
+
+
+```{r mack_diagnostics, fig.width=7, fig.height=9}
+# Latest cumulative for Mack = Ultimate - IBNR
+mack_latest <- mack_ultimate - mack_reserve
+names(mack_latest) <- rownames(mack_byorigin)
+names(mack_ultimate) <- rownames(mack_byorigin)
+
+# Use the same cumulative and incremental triangles as Chain Ladder
+mack_inc_obs <- cum2incr(incur_cum_triangle)
+mack_inc_fit <- cum2incr(predict(cl_mod))  
+
+rownames(mack_inc_obs) <- rownames(incur_cum_triangle)
+colnames(mack_inc_obs) <- colnames(incur_cum_triangle)
+rownames(mack_inc_fit) <- rownames(incur_cum_triangle)
+colnames(mack_inc_fit) <- colnames(incur_cum_triangle)
+
+plot_reserving_diagnostics(
+  method_name  = "Mack Chain-Ladder",
+  latest_vec   = mack_latest,
+  ultimate_vec = mack_ultimate,
+  cum_triangle = incur_cum_triangle,
+  inc_obs      = mack_inc_obs,
+  inc_fit      = mack_inc_fit
+)
+
+```
+
+Figure 7: Mack Chain-Ladder Diagnostic Plots
+
+## Generalized Linear Model
+
+The GLM (ODP) model estimates a much higher total IBNR (~40,375) driven mainly by the immature accident year 1997. Compared to Chain Ladder or Mack Chain Ladder (~4,450) this is heavy amount. The mdoel incorporates over-dispersion and parametric structure, leading to more conservative future development expectations. The standard error is large, indicating substantial uncertainty, but results still suggest a mostly mature portfolio with risk concentrated in the youngest year.
+
+```{r}
+# =========================
+# GLM RESERVE MODEL
+# =========================
+
+library(ChainLadder)
+
+# # Convert cumulative triangle to incremental
+# glm_triangle <- cum2incr(incur_cum_triangle)
+#
+# # GLM cannot handle zero / negative values
+# glm_triangle_adj <- glm_triangle
+# glm_triangle_adj[
+#   !is.na(glm_triangle_adj) & glm_triangle_adj <= 0
+# ] <- 1e-6
+
+
+
+# Convert cumulative triangle to incremental
+glm_triangle <- cum2incr(incur_cum_triangle)
+
+# GLM cannot handle zero / negative values
+glm_triangle_adj <- glm_triangle
+glm_triangle_adj[!is.na(glm_triangle_adj) & glm_triangle_adj <= 0] <- 1e-6
+
+# Make sure it's a proper 'triangle' object
+glm_triangle_adj <- as.triangle(glm_triangle_adj)
+
+set.seed(123)
+
+# =========================
+# GLM with OVER-DISPERSED POISSON
+# =========================
+glm_mod <- glmReserve(
+  triangle   = glm_triangle_adj,
+  var.power  = 1,      # over-dispersed Poisson
+  link.power = 0,      # log link
+  cum        = FALSE,
+  # mse.method = "formula"
+)
+
+
+glm_sum <- summary(glm_mod)
+
+glm_df <- glm_mod$summary   
+
+glm_df       
+
+# 2) Split AY rows vs total row
+glm_ay     <- glm_df[rownames(glm_df) != "total", , drop = FALSE]
+glm_totals <- glm_df[rownames(glm_df) == "total", , drop = FALSE]
+
+# 3) AY-level Ultimate and Reserve (IBNR)
+glm_ultimate <- glm_ay$Ultimate
+glm_reserve  <- glm_ay$IBNR
+
+# 4) Total reserve and its standard error
+glm_total_reserve <- glm_totals$IBNR
+glm_total_se      <- glm_totals$S.E
+glm_ay_se <- glm_ay$S.E
+
+# Quick checks
+# glm_ay_se
+glm_ultimate
+glm_reserve
+glm_total_reserve
+glm_total_se
+
+```
+
+Loss development drops sharply after the first few periods across all accident years, indicating fast reporting and little late development, with 1997 still partially immature.
+
+```{r}
+plot(glm_mod, lattice = TRUE)
+```
+
+Figure 8: GLM Incremental Development Plot
+
+Latest vs forecast bars show higher GLM reserve for recent years. Residual plots show almost zero scatter, indicating an excellent model fit with minimal structural error.
+
+
+```{r glm_diagnostics, fig.width=7, fig.height=9}
+# =========================
+# GLM DIAGNOSTIC PLOTS (using FullTriangle)
+# =========================
+
+# 0) Local matrix copies
+cum_mat <- as.matrix(incur_cum_triangle)
+inc_obs <- as.matrix(glm_triangle_adj)
+inc_fit <- as.matrix(glm_mod$FullTriangle)
+
+# Sanity checks
+stopifnot(all(dim(cum_mat) == dim(inc_obs)))
+stopifnot(all(dim(cum_mat) == dim(inc_fit)))
+
+n_origin <- nrow(cum_mat)
+n_dev    <- ncol(cum_mat)
+
+# 1) Origin and development indices
+origin_years <- suppressWarnings(as.numeric(rownames(cum_mat)))
+if (any(is.na(origin_years))) {
+  origin_years <- seq_len(n_origin)
+}
+
+dev_lags <- suppressWarnings(as.numeric(colnames(cum_mat)))
+if (any(is.na(dev_lags))) {
+  dev_lags <- seq_len(n_dev)
+}
+
+# Put consistent dimnames on our local matrices
+rownames(cum_mat) <- origin_years
+colnames(cum_mat) <- dev_lags
+rownames(inc_obs) <- origin_years
+colnames(inc_obs) <- dev_lags
+rownames(inc_fit) <- origin_years
+colnames(inc_fit) <- dev_lags
+
+# 2) Build origin / dev / calendar matrices
+origin_mat <- matrix(rep(origin_years, each = n_dev),
+                     nrow = n_origin, ncol = n_dev)
+dev_mat    <- matrix(rep(dev_lags,     times = n_origin),
+                     nrow = n_origin, ncol = n_dev)
+cal_mat    <- origin_mat + dev_mat  # simple calendar index
+
+# 3) Standardised residuals: (obs - fit)/sqrt(fit)
+inc_fit_pos <- pmax(inc_fit, 1e-6)  # avoid zero
+resid_mat   <- (inc_obs - inc_fit_pos) / sqrt(inc_fit_pos)
+
+keep <- !is.na(inc_obs)
+
+resid_vec  <- resid_mat[keep]
+fitted_vec <- inc_fit_pos[keep]
+origin_vec <- origin_mat[keep]
+dev_vec    <- dev_mat[keep]
+cal_vec    <- cal_mat[keep]
+
+# 4) Latest and Ultimate by AY from GLM summary
+glm_df <- glm_mod$summary
+glm_ay <- glm_df[rownames(glm_df) != "total", , drop = FALSE]
+
+glm_latest   <- glm_ay[, "Latest"]
+glm_ultimate <- glm_ay[, "Ultimate"]
+
+ibnr_vec <- glm_ultimate - glm_latest
+bar_mat  <- rbind(Latest   = glm_latest,
+                  Forecast = pmax(ibnr_vec, 0))
+
+# 5) 6-panel plot
+op <- par(mfrow = c(3, 2), mar = c(4, 4, 3, 1))
+
+## (1) Barplot: Latest vs Forecast (IBNR)
+barplot(bar_mat,
+        beside      = FALSE,
+        main        = "GLM (ODP) - Latest vs Forecast",
+        ylab        = "Amount",
+        xlab        = "Origin period",
+        legend.text = c("Latest", "Forecast (IBNR)"),
+        args.legend = list(x = "topleft", bty = "n", cex = 0.8))
+
+## (2) Development curves (cumulative)
+matplot(dev_lags, t(cum_mat),
+        type = "l", lty = 1,
+        main = "GLM (ODP) - Developments by origin",
+        xlab = "Development period", ylab = "Amount")
+text(x      = max(dev_lags),
+     y      = cum_mat[, ncol(cum_mat)],
+     labels = origin_years, pos = 4, cex = 0.7)
+
+## (3) Residuals vs fitted
+plot(fitted_vec, resid_vec,
+     main = "Standardised residuals vs fitted",
+     xlab = "Fitted", ylab = "Standardised residuals")
+abline(h = 0, col = "red")
+
+## (4) Residuals vs origin
+plot(origin_vec, resid_vec,
+     main = "Standardised residuals by origin period",
+     xlab = "Origin period", ylab = "Standardised residuals")
+abline(h = 0, col = "red")
+
+## (5) Residuals vs calendar period
+plot(cal_vec, resid_vec,
+     main = "Standardised residuals by calendar period",
+     xlab = "Calendar period (AY + lag)",
+     ylab = "Standardised residuals")
+abline(h = 0, col = "red")
+
+## (6) Residuals vs development period
+plot(dev_vec, resid_vec,
+     main = "Standardised residuals by development period",
+     xlab = "Development period", ylab = "Standardised residuals")
+abline(h = 0, col = "red")
+
+par(op)
+
+
+```
+
+Figure 9: GLM Diagnostic Panels
+
+# Result
+
+Chain Ladder and Mack produce the same total IBNR (~4400), but Mack quantifies uncertainty with a very wide 95% interval, while the GLM gives a much higher reserve estimate (~40000) with large variance, indicating more conservative future development expectations.
+
+```{r}
+## =======================
+## Model Comparison Table
+## =======================
+
+# Create 95% CI for GLM
+glm_lower95 <- glm_total_reserve - 1.96 * glm_total_se
+glm_upper95 <- glm_total_reserve + 1.96 * glm_total_se
+
+# Build comparison table
+model_comp <- data.frame(
+  Model        = c("Chain Ladder", "Mack", "GLM (ODP)"),
+  Total_Ultimate = c(sum(cl_ultimate), sum(mack_ultimate), sum(glm_ultimate)),
+  Total_IBNR     = c(cl_total_reserve, mack_total_reserve, glm_total_reserve),
+  Std_Error      = c("—",round(mack_total_se, 3) , round(glm_total_se, 3)),
+  CI_95          = c(
+                    "—",
+                    paste0("[", round(mack_total_lower95,0), ", ", round(mack_total_upper95,0), "]"),
+                    paste0("[", round(glm_lower95,0), ", ", round(glm_upper95,0), "]")
+                  )
+)
+
+# Display nicely formatted table
+knitr::kable(
+  model_comp,
+  caption = "Table 4: Summary Comparison of Reserving Models",
+  align = "c"
+)
+
+
+
+```
+
+IBNR remains close to zero for most accident years under all methods, but 1997 drives a spike in reserve need. Mack and GLM include uncertainty bands, with GLM projecting the highest future development risk.
+
+```{r}
+
+
+library(knitr)
+
+# Explicit accident years in the triangle
+AYs <- 1988:1997
+
+# Chain Ladder IBNR (already named by AY)
+cl_ibnr <- as.numeric(cl_reserve[as.character(AYs)])
+
+# Mack IBNR: your printed output shows 10 values in the same order as CL
+mack_ibnr <- as.numeric(mack_reserve)          # length 10, 1988–1997 in order
+
+# Mack SE by AY
+mack_se <- as.numeric(mack_byorigin[as.character(AYs), "Mack.S.E"])
+# mack_se
+# GLM IBNR: glm_reserve has 9 values (for 1989–1997); pad 1988 with 0
+glm_ibnr <- c(
+  `1988` = 0,
+  setNames(glm_reserve, as.character(1989:1997))
+)
+glm_se <- c(
+  `1988` = 0,
+  setNames(glm_ay_se, as.character(1989:1997))
+)
+# Make sure GLM is ordered 1988–1997
+glm_ibnr <- as.numeric(glm_ibnr[as.character(AYs)])
+glm_se <- as.numeric(glm_se[as.character(AYs)])
+# Build main table
+ay_compare <- data.frame(
+  AY        = AYs,
+  CL_IBNR   = cl_ibnr,
+  Mack_IBNR = mack_ibnr,
+  Mack_SE= mack_se,
+  GLM_IBNR  = glm_ibnr,
+  GLM_SE = glm_se
+)
+
+# Add total row
+ay_compare <- rbind(
+  ay_compare,
+  data.frame(
+    AY        = "Total",
+    CL_IBNR   = sum(ay_compare$CL_IBNR,   na.rm = TRUE),
+    Mack_IBNR = sum(ay_compare$Mack_IBNR, na.rm = TRUE),
+    Mack_SE= sum(ay_compare$mack_se, na.rm = TRUE),
+    GLM_IBNR  = glm_total_reserve,
+    GLM_SE = glm_total_se
+  )
+)
+
+# kable(
+#   ay_compare,
+#   caption = "Accident year and total IBNR comparison across Chain Ladder, Mack, and GLM"
+# )
+library(ggplot2)
+library(gridExtra)
+
+# Filter only accident years (no Total row)
+plot_df <- subset(ay_compare, AY != "Total")
+plot_df$AY_num <- as.numeric(as.character(plot_df$AY))
+
+# y-axis limit
+ylow  <- -15000
+yhigh <- 50000
+
+### 1) Chain Ladder (no band)
+p_cl <- ggplot(plot_df, aes(x = AY_num, y = CL_IBNR)) +
+  geom_line(size=1.1, color="darkgreen") +
+  geom_point(size=2, color="darkgreen") +
+  ylim(ylow, yhigh) +
+  scale_x_continuous(breaks = plot_df$AY_num) +
+  labs(title="Chain Ladder", x="Accident Year", y="IBNR") +
+  theme_minimal(base_size=12) +
+  theme(plot.title = element_text(face="bold", hjust=0.5))
+
+### 2) Mack (band + line)
+p_mack <- ggplot(plot_df, aes(x=AY_num, y=Mack_IBNR)) +
+  geom_ribbon(aes(
+      ymin = Mack_IBNR -  Mack_SE,
+      ymax = Mack_IBNR +  Mack_SE),
+      fill = "grey70", alpha = 0.45) +         # <–– visible band
+  geom_line(size = 1.6, color="grey30") +      # thicker line on top
+  geom_point(size = 2.7, color="grey30") +
+  ylim(ylow, yhigh) +
+  scale_x_continuous(breaks = plot_df$AY_num) +
+  labs(title="Mack Chain-Ladder", x="Accident Year", y="IBNR") +
+  theme_minimal(base_size=12) +
+  theme(plot.title=element_text(face="bold",hjust=0.5))
+
+
+### 3) GLM (band + line)
+p_glm <- ggplot(plot_df, aes(x=AY_num, y=GLM_IBNR)) +
+  geom_ribbon(aes(
+      ymin = GLM_IBNR - GLM_SE,
+      ymax = GLM_IBNR +  GLM_SE),
+      fill = "skyblue2", alpha = 0.45) +       # visible band like example
+  geom_line(size = 1.6, color="dodgerblue4") +
+  geom_point(size = 2.7, color="dodgerblue4") +
+  ylim(ylow, yhigh) +
+  scale_x_continuous(breaks = plot_df$AY_num) +
+  labs(title="GLM (ODP)", x="Accident Year", y="IBNR") +
+  theme_minimal(base_size=12) +
+  theme(plot.title=element_text(face="bold",hjust=0.5))
+
+# Arrange 3 plots horizontally (1x3 layout)
+grid.arrange(p_cl, p_mack, p_glm, nrow=3)
+```
+
+Figure 10: Accident-year IBNR comparison (CL, Mack, GLM)
+
+# Discussion
+The three reserving approaches give meaningfully different outcomes. Chain Ladder and Mack both produce a very small total IBNR (~4400), suggesting the portfolio is largely run-off with minimal expected future emergence. However, Mack’s wide 95% interval (−58000 to 67000) and the GLM’s higher reserve estimate (~40000) highlight material tail uncertainty, particularly driven by AY 1997. In practice, when models diverge this way, decision-makers often rely on a more conservative upper-level reserve such as the stochastic or GLM indication rather than the deterministic Chain Ladder point estimate, to avoid under-reserving in the presence of uncertainty.
+
+These results imply that while historical development appears stable, the last accident year remains the key source of risk. Model differences remind us that reserve estimates depend heavily on assumptions and data maturity. Thus, reserving decisions should also consider expert judgment, exposure changes, and business context beyond the numerical outputs alone.
+
+# Conclusion
+
+This study showed that Chain Ladder and Mack produce similar and relatively small total IBNR (~4400), while the GLM estimates a much higher reserve (~40000), indicating a more conservative view of future development, especially for the youngest accident year. Overall, it mature with limited remaining uncertainty, but methods differ in how much tail risk they assume. For practical reserving decisions, Chain Ladder may serve as a baseline, Mack provides valuable uncertainty quantification, and GLM is preferable when a more prudent or risk-sensitive reserve is desired.
+
+# Future Work
+
+Future work could expand to multiple companies, paid triangles, or calendar-year effects to validate generality and reduce potential bias from using a single insurer.
+
+# Reference
+
+Brown, R. L., & Gottlieb, L. R. (2007). Introduction to ratemaking and loss reserving for property and casualty insurance. Actex Publications.
+
+
+Casualty Actuarial Society. (2011). Loss reserving data pulled from NAIC Schedule P. <https://www.casact.org/publications-research/research/research-resources/loss-reserving-data-pulled-naic-schedule-p>
+
+
+# Supplimentary Materials
+This table data used for Accident-year IBNR comparison (CL, Mack, GLM) comparison plot. 
+Table i: Accident-year IBNR comparison (CL, Mack, GLM)
+```{r}
+
+library(knitr)
+
+# Explicit accident years in the triangle
+AYs <- 1988:1997
+
+# Chain Ladder IBNR (already named by AY)
+cl_ibnr <- as.numeric(cl_reserve[as.character(AYs)])
+
+# Mack IBNR: your printed output shows 10 values in the same order as CL
+mack_ibnr <- as.numeric(mack_reserve)          # length 10, 1988–1997 in order
+
+# Mack SE by AY
+mack_se <- as.numeric(mack_byorigin[as.character(AYs), "Mack.S.E"])
+# mack_se
+# GLM IBNR: glm_reserve has 9 values (for 1989–1997); pad 1988 with 0
+glm_ibnr <- c(
+  `1988` = 0,
+  setNames(glm_reserve, as.character(1989:1997))
+)
+glm_se <- c(
+  `1988` = 0,
+  setNames(glm_ay_se, as.character(1989:1997))
+)
+# Make sure GLM is ordered 1988–1997
+glm_ibnr <- as.numeric(glm_ibnr[as.character(AYs)])
+glm_se <- as.numeric(glm_se[as.character(AYs)])
+# Build main table
+ay_compare <- data.frame(
+  AY        = AYs,
+  CL_IBNR   = cl_ibnr,
+  Mack_IBNR = mack_ibnr,
+  Mack_SE= mack_se,
+  GLM_IBNR  = glm_ibnr,
+  GLM_SE = glm_se
+)
+
+# Add total row
+ay_compare <- rbind(
+  ay_compare,
+  data.frame(
+    AY        = "Total",
+    CL_IBNR   = sum(ay_compare$CL_IBNR,   na.rm = TRUE),
+    Mack_IBNR = sum(ay_compare$Mack_IBNR, na.rm = TRUE),
+    Mack_SE= sum(ay_compare$mack_se, na.rm = TRUE),
+    GLM_IBNR  = glm_total_reserve,
+    GLM_SE = glm_total_se
+  )
+)
+
+kable(
+  ay_compare,
+  caption = "Accident year and total IBNR comparison across Chain Ladder, Mack, and GLM"
+)
+```
